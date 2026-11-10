@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(npm run build)",
+      "Bash(npm run dev)",
+      "Bash(npm run lint)",
+      "Bash(npm run lint:*)",
+      "Bash(npm run test)",
+      "Bash(npm run test:*)",
+      "Bash(npm run seed)",
+      "Bash(npm ci)",
+      "Bash(npm install)",
+      "Bash(npx tsc --noEmit)",
+      "Bash(npx tsc --noEmit *)",
+      "Bash(npx eslint *)",
+      "Bash(npx prettier --check *)",
+      "Bash(npx jest *)",
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git diff)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git branch)",
+      "Bash(docker compose up -d)",
+      "Bash(docker compose down)",
+      "Bash(docker compose ps)",
+      "Bash(docker compose logs *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Bash(git push *)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean *)",
+      "Bash(npm publish *)",
+      "Bash(rm -rf *)",
+      "Bash(docker compose down -v)",
+      "Bash(mongosh *)",
+      "Bash(mongo *)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx tsc --noEmit && npx eslint src --max-warnings=0 || true",
+            "timeout": 180
+          }
+        ]
+      }
+    ]
+  }
+}
