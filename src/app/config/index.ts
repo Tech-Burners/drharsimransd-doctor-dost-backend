@@ -100,6 +100,9 @@ export default {
   logo_url: process.env.LOGO_URL,
   alert_email: process.env.ALERT_EMAIL,
 
+  // OpenAI (read only by utils/openAi.ts, which nothing imports yet)
+  openai_api_key: process.env.OPENAI_API_KEY,
+
   // Monitoring
   sentry_dsn: process.env.SENTRY_DSN,
 

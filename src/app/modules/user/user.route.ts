@@ -58,8 +58,10 @@ userRoutes
     userController.completeDoctorProfile,
   )
 
-  .post("/testing-email",
-    userController.sendEmailTesting
+  .post(
+    "/testing-email",
+    auth(USER_ROLE.ADMIN), // was public: an open mail relay with caller-chosen recipient and content
+    userController.sendEmailTesting,
   )
 
   .patch(

@@ -30,7 +30,7 @@ const buildApp = (handlerCalls: { count: number }, failWith?: number) => {
 };
 
 describe('requireIdempotency', () => {
-  const db = useTestDb();
+  useTestDb();
 
   it('rejects a missing Idempotency-Key with 400', async () => {
     const calls = { count: 0 };

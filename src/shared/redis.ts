@@ -32,9 +32,23 @@ export const isRedisReachable = async (): Promise<boolean> => {
   }
 };
 
+const QUIT_TIMEOUT_MS = 3000;
+
+/**
+ * Close the shared connection without ever hanging. QUIT is queued like any command, so on a
+ * client that never connected (Redis down) it waits forever and a worker could not shut
+ * down. Only a connected client is asked to QUIT, and only for a bounded time; anything
+ * else is disconnected outright.
+ */
 export const closeRedis = async (): Promise<void> => {
-  if (client) {
-    await client.quit().catch(() => undefined);
-    client = null;
+  if (!client) return;
+  const c = client;
+  client = null;
+  if (c.status === 'ready') {
+    await Promise.race([
+      c.quit().catch(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, QUIT_TIMEOUT_MS)),
+    ]);
   }
+  c.disconnect();
 };
