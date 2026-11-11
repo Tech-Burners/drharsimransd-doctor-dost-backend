@@ -15,6 +15,7 @@ export interface TUser {
   gender?: TGender;
   dateOfBirth?: Date;
   phoneVerified: boolean;
+  emailVerified: boolean;
   tokenVersion: number;
   status: TUserStatus;
   isDeleted: boolean;

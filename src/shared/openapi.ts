@@ -19,6 +19,12 @@ extendZodWithOpenApi(z);
 
 export const registry = new OpenAPIRegistry();
 
+registry.registerComponent('securitySchemes', 'bearerAuth', {
+  type: 'http',
+  scheme: 'bearer',
+  bearerFormat: 'JWT',
+});
+
 export const registerRoute = (route: RouteConfig): void => {
   registry.registerPath(route);
 };

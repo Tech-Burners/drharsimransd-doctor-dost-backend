@@ -53,6 +53,10 @@ const otpSchema = new Schema<TOtp, OtpModel>(
 // Automatically remove OTPs once they have expired.
 otpSchema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
 
+// One live code per receiver and purpose. issueOtp() upserts on this pair, so two
+// concurrent requests cannot leave two valid codes behind.
+otpSchema.index({ sentTo: 1, purpose: 1 }, { unique: true });
+
 const hashOtp = (plainOtp: string) =>
     bcrypt.hash(plainOtp, Number(config.bcrypt_salt_rounds));
 

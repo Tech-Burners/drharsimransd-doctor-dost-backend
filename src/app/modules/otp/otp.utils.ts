@@ -5,9 +5,8 @@ import { generateOtp } from '../../utils/otpGenerator';
 const generateOptAndExpireTime = () => {
   const otp = generateOtp();
 
-  const otpExpiryTime = parseInt(config.otp_expire_time as string) || 2;
-
-  const expiredAt = moment().add(otpExpiryTime, 'minute').toISOString();
+  // config.otp_expire_time is already a number (minutes) with a default of 5.
+  const expiredAt = moment().add(config.otp_expire_time, 'minute').toISOString();
 
   return {
     otp,

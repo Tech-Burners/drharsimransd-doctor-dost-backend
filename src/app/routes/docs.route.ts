@@ -11,7 +11,7 @@ import { buildOpenApiDocument } from '../../shared/openapi';
 export const createDocsRoutes = (): Router => {
   const router = Router();
   const gate: RequestHandler[] =
-    config.NODE_ENV === 'production' ? [auth(USER_ROLE.ADMIN)] : [];
+    config.NODE_ENV === 'production' ? auth(USER_ROLE.ADMIN) : [];
   router.get('/', ...gate, (_req, res) => {
     res.json(buildOpenApiDocument());
   });

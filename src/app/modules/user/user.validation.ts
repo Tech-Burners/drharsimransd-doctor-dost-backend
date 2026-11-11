@@ -13,8 +13,8 @@ const userValidationSchema = z.object({
     password: z
       .string()
       .min(6, { message: 'Password must be at least 6 characters long' }),
-    role: z.enum([USER_ROLE.PATIENT, USER_ROLE.DOCTOR, USER_ROLE.ADMIN], {
-      message: 'Role must be either patient or dcotor',
+    role: z.enum([USER_ROLE.PATIENT, USER_ROLE.DOCTOR], {
+      message: 'Role must be either patient or doctor',
     }),
   }),
 });

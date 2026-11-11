@@ -139,6 +139,7 @@ const otpVerifyAndCreateUser = async ({
       email,
       password,
       role,
+      emailVerified: true, // the email OTP was just verified
       status: USER_STATUS.ACTIVE,
     });
   } catch (error) {
@@ -175,6 +176,9 @@ const otpVerifyAndCreateUser = async ({
 
   // Generate access token
   const jwtPayload = {
+    typ: 'access',
+    sub: user._id.toString(),
+    tokenVersion: user.tokenVersion ?? 0,
     userId: user._id.toString(),
     name: user.name || '',
     email: user.email,
@@ -196,7 +200,13 @@ const otpVerifyAndCreateUser = async ({
 const updateUser = async (id: string, payload: Partial<TUser>) => {
 
 
-  const { role, email, status, isDeleted,password, ...rest } = payload;
+  // Fields a user must never set on themselves. phoneVerified / emailVerified /
+  // tokenVersion would let anyone skip verification or manipulate sessions.
+  const {
+    role, email, status, isDeleted, password,
+    phoneVerified, emailVerified, tokenVersion,
+    ...rest
+  } = payload as Partial<TUser> & Record<string, unknown>;
 
   const isUserExist = await User.findById(id);
 
@@ -204,8 +214,14 @@ const updateUser = async (id: string, payload: Partial<TUser>) => {
     throw new AppError(httpStatus.BAD_REQUEST, 'User not found');
   }
 
+  // A different phone number is a different, unverified number.
+  const update: Record<string, unknown> = { ...rest };
+  if (typeof rest.phone === 'string' && rest.phone.trim() !== isUserExist.phone) {
+    update.phone = rest.phone.trim();
+    update.phoneVerified = false;
+  }
 
-  const user = await User.findByIdAndUpdate(id, rest, { new: true });
+  const user = await User.findByIdAndUpdate(id, update, { new: true });
 
   if (!user) {
     throw new AppError(httpStatus.BAD_REQUEST, 'User updating failed');
@@ -292,11 +308,14 @@ const completeDoctorProfile = async (
         { new: true, upsert: true, setDefaultsOnInsert: true, session },
       );
 
+      const phone = payload.phone.trim();
       const updatedUser = await User.findByIdAndUpdate(
         userId,
         {
           name: payload.name,
-          phone: payload.phone,
+          phone,
+          // A different phone number is a different, unverified number.
+          ...(phone !== user.phone && { phoneVerified: false }),
           ...(payload.profileImage && { profileImage: payload.profileImage }),
         },
         { new: true, session },

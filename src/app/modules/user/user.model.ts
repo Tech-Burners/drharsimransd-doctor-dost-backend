@@ -52,6 +52,11 @@ const userSchema = new Schema<TUser>(
       type: Boolean,
       default: false,
     },
+    // Set by POST /auth/verify-email, or at creation by the older OTP-first signup.
+    emailVerified: {
+      type: Boolean,
+      default: false,
+    },
     // Bumped to invalidate all previously issued tokens for this user.
     tokenVersion: {
       type: Number,
