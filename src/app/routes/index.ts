@@ -8,6 +8,7 @@ import { healthRoutes } from "../modules/health/health.route";
 import { walletRoutes } from "../modules/wallet/wallet.route";
 import { refundRoutes } from "../modules/refund/refund.route";
 import { recoveryRoutes } from "../modules/doctorEarning/recovery.route";
+import { callRoutes } from "../modules/call/call.route";
 
 const router = Router();
 
@@ -48,6 +49,10 @@ const moduleRoutes = [
   {
     path: "/admin/recoveries",
     route: recoveryRoutes
+  },
+  {
+    path: "/calls",
+    route: callRoutes
   }
 
 ];

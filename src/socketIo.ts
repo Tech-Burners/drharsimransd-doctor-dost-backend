@@ -3,7 +3,6 @@ import { Server as HttpServer } from 'http'
 import express, { Application } from 'express'
 import httpStatus from 'http-status'
 import AppError from './app/error/AppError'
-import { verifyToken } from './app/utils/tokenManage'
 import config from './app/config'
 import mongoose from 'mongoose'
 import { callbackFn } from './app/utils/callbackFn'
@@ -15,6 +14,12 @@ import { Notification } from './app/modules/notification/notification.model'
 import { TNotificationType } from './app/modules/notification/notification.interface'
 import { User } from './app/modules/user/user.model'
 import { sendEmail } from './app/utils/mailSender'
+import { createAdapter } from '@socket.io/redis-adapter'
+import { verifyAccessToken } from './app/middleware/auth'
+import { createRedisConnection } from './shared/redis'
+import { setRealtimeEmitter, userRoom } from './shared/realtime'
+import { logger } from './shared/logger'
+import { registerPresenceHandlers } from './app/modules/presence/presence.socket'
 
 // Define the socket server port
 const socketPort: number = parseInt(process.env.SOCKET_PORT || '9020', 10)
@@ -54,6 +59,19 @@ export const initSocketIO = async (server: HttpServer): Promise<void> => {
     },
   })
 
+  // Multi-instance: with the Redis adapter a doctor connected to instance A receives an event
+  // emitted from instance B. Required from day one, not when a second instance is added.
+  if (config.redis_url) {
+    const pub = createRedisConnection()
+    io.adapter(createAdapter(pub, pub.duplicate()))
+  }
+  // Services emit to rooms (user:<id>), never to a single instance's socket map.
+  setRealtimeEmitter({
+    emitToUser: (userId, event, payload) => {
+      io.to(userRoom(userId)).emit(event, payload)
+    },
+  })
+
   // Start the HTTP server on the specified port
   server.listen(socketPort, () => {
     console.log(
@@ -80,20 +98,13 @@ export const initSocketIO = async (server: HttpServer): Promise<void> => {
       )
     }
 
-    // const userDetails = verifyToken({token, access_secret: config.jwt_access_secret as string});
-
+    // The same checks as the HTTP middleware: signature, expiry, token type, tokenVersion and
+    // account status. Reset / signup tokens (signed with related secrets) are refused.
     let userDetails
     try {
-      userDetails = verifyToken({
-        token,
-        access_secret: config.jwt_access_secret as string,
-      })
+      userDetails = await verifyAccessToken(token.startsWith('Bearer ') ? token.slice(7) : token)
     } catch (err) {
-      console.error('Socket JWT verify error:', err)
-      return next(new Error('Authentication error: Invalid token'))
-    }
-
-    if (!userDetails) {
+      logger.warn({ err }, 'socket handshake rejected')
       return next(new Error('Authentication error: Invalid token'))
     }
 
@@ -114,6 +125,12 @@ export const initSocketIO = async (server: HttpServer): Promise<void> => {
   io.on('connection', (socket: Socket) => {
     // =================== try catch 1 start ================
     try {
+      // Every socket joins the room events are addressed to (reachable across instances).
+      if (socket.user) {
+        void socket.join(userRoom(socket.user._id))
+        registerPresenceHandlers(io, socket)
+      }
+
       // Automatically register the connected user to avoid missing the "userConnected" event.
       if (socket.user && socket.user._id) {
         connectedUsers.set(socket.user._id.toString(), { socketID: socket.id })

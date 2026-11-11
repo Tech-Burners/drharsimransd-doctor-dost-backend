@@ -14,13 +14,14 @@ import { captureException, flushSentry, initSentry } from './shared/sentry';
 import { randomUUID } from 'crypto';
 import { runWithContext } from './shared/requestContext';
 import { startOutboxWorker } from './app/modules/outbox/outbox.worker';
+import { startCallWorkers } from './app/modules/call/call.worker';
 
 initSentry('worker');
 
 const workers: Worker[] = [];
 
 // Later phases register their queue workers here via createWorker() from shared/queue.
-const startWorkers = async (): Promise<Worker[]> => [await startOutboxWorker()];
+const startWorkers = async (): Promise<Worker[]> => [await startOutboxWorker(), ...(await startCallWorkers())];
 
 const shutdown = async (signal: string, code = 0) => {
   logger.info({ signal }, 'worker shutting down');

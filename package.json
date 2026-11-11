@@ -24,6 +24,9 @@
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^7.3.4",
     "@sentry/node": "^11.11.0",
+    "@socket.io/redis-adapter": "^8.3.0",
+    "@socket.io/redis-emitter": "^5.1.0",
+    "agora-token": "^2.0.7",
     "bcrypt": "^5.1.1",
     "bullmq": "^6.7.3",
     "colorette": "^2.0.20",
@@ -36,6 +39,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^8.1.0",
+    "firebase-admin": "^14.5.0",
     "helmet": "^8.3.0",
     "http-status": "^2.1.0",
     "ioredis": "^6.0.0",
