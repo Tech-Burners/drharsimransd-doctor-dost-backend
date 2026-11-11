@@ -34,9 +34,10 @@ wallet to call verified doctors. This repository is the **backend only**. It ser
 | Phase | State |
 |---|---|
 | 2 — Schema fixes | Done (committed) |
-| 3 — Foundation | Done, awaiting commit approval |
-| 4 — Auth | Not started |
-| 5 — Wallet and payments | Not started |
+| 3 — Foundation | Done (committed) |
+| 4 — Auth | Done (committed) |
+| 5 — Wallet and payments | Done (committed): custom top-up, shared full refund, recovery and outbox |
+| 6 — Calls and billing | Done (committed). Real Agora / FCM checks and some client confirmations are still pending, see `PROGRESS.md` |
 
 Phase 3 provides the app shell, response envelope, logging, Redis/BullMQ factories, worker
 entrypoint, health endpoint, seed script, replica-set docker-compose, test harness and the
@@ -223,13 +224,46 @@ SMS credentials. `.env` and `.env.*` are git-ignored; `env.example` is tracked.
 | `npm test` | All tests |
 | `npm run test:unit` | Unit tests only (skips `*.int.test.ts`) |
 | `npm run test:integration` | Integration tests only |
-| `npm run lint` / `lint:fix` | ESLint |
+| `npm run lint` / `lint:fix` | ESLint 9 (flat config in `eslint.config.js`; legacy files still have errors) |
 | `npm run prettier` / `prettier:fix` | Prettier |
 
-`npm run build` currently reports two pre-existing type errors, in `modules/otp/otp.utils.ts`
-and `utils/openAi.ts`. They are documented in [PROGRESS.md](PROGRESS.md).
+`npm run build` is clean. Tests that need a real Redis run when `TEST_REDIS_URL` is set (see `docs/TESTING.md`).
 
 ---
+
+## Wallet endpoints
+
+`GET /api/v1/wallet` (patient): balance in integer paise, derived from the ledger, the top-up
+limits (`topupLimits`) and a paginated ledger. `POST /api/v1/wallet/orders` (patient, needs an
+`Idempotency-Key` header): body is `{ amountRupees }`, a whole number of rupees between the
+configured minimum and maximum (₹100 to ₹50,000 by default, `PlatformSetting`); the server converts
+to paise and enforces the limits. `POST /api/v1/webhooks/razorpay`: the only path that credits a
+wallet; the signature is verified on the raw body. `POST /api/v1/admin/refunds` (admin):
+`{ callId, reason, note? }` refunds the FULL recorded charge (no amount is accepted), handles the
+doctor's earning (forfeit, reverse, reduce a pending withdrawal, or record a recovery), and queues
+patient and doctor notifications through the outbox. Order creation is rate limited per user, per IP and by unpaid-order count. `GET /api/v1/admin/recoveries` and `POST
+/api/v1/admin/recoveries/:earningId/write-off` (admin) manage what refunded doctors still owe. The
+ledger is append-only; `Wallet.balancePaise` is a display cache.
+
+The worker (`npm run worker`) delivers outbox notifications. Legacy signup endpoints can be switched
+to `410 Gone` with `LEGACY_SIGNUP_MODE=gone`.
+
+## Call endpoints
+
+`POST /api/v1/calls` (patient, `Idempotency-Key`) starts a call; `POST /calls/:id/accept` and `/reject` (doctor); `POST /calls/:id/end` is only a hint; `GET /calls` and `GET /calls/:id` are the history (`isFreeShortCall` on every row). `POST /api/v1/webhooks/agora/call` receives Agora channel events (signature verified on the raw body); the call duration and the bill are DERIVED from them, never taken from a client. Doctor presence is a Redis key renewed by the socket `presence` event. The worker runs the 30 s sweep, the ringing timeout and the finalize jobs.
+
+## Auth endpoints
+
+All under `/api/v1/auth`: `POST register`, `login`, `refresh`, `logout`, `logout-all`,
+`forgot-password`, `reset-password`, `verify-email`, `phone/send-otp` and `phone/verify`
+(doctor only; the account and phone come from the token, the body carries only the code), plus
+`PATCH change-password`. Access tokens last 15 minutes; refresh tokens are rotated on every
+use and reuse of a spent one revokes every session. Login, registration and OTP routes are
+rate limited in Redis; if Redis is down they fail closed with 503.
+
+SMS goes through `sendSms(to, body)` in `src/shared/sms.ts`. Only a `console` development
+provider exists; it is refused in production. A real provider is not integrated yet (see
+`env.example`).
 
 ## API Conventions
 

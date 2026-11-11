@@ -18,6 +18,11 @@ These are not style preferences. Breaking any of them is a defect.
    amount, a rate, a balance, or a duration that the server then uses. Everything is
    recomputed server-side. The authenticated subject comes from the token, never from the
    body, query, or path.
+   **One client-approved exception: the wallet top-up amount** (decision 22). It is the
+   patient's own purchase request, so `POST /wallet/orders` takes it from the body, validated
+   against a server-side minimum and maximum. It is still never trusted for the credit: the
+   wallet is credited only from the verified Razorpay webhook, for the amount stored on the
+   server's `PaymentOrder`, and only when Razorpay's captured amount equals it.
 
 2. **`WalletLedger` is authoritative. `Wallet.balancePaise` is a cache.** Every movement is a
    new ledger document. Nothing is ever updated or deleted. The cache is written in the same
@@ -97,7 +102,9 @@ MongoDB multi-document transactions need a replica set. Local dev runs
 `mongod --replSet rs0` with the set initiated. If a transaction call throws because of the
 topology, **fix the topology — never remove the session to silence it.**
 
-Five operations run in a session, and only these five:
+Six operations run in a session, and only these six (the sixth, refund, was approved by the
+client after the Phase 5 review, decision 24; the recovery write-off is part of it, as the same
+kind of financial adjustment):
 
 | Operation | Must commit together |
 |---|---|
@@ -105,10 +112,16 @@ Five operations run in a session, and only these five:
 | Call end | Ledger debit, wallet cache, call final fields, `DoctorEarning` row, and the `ShortCallAllowance` insert when the call is free |
 | Top-up credit | Ledger credit, wallet cache, `PaymentOrder` status + `ledgerEntryId` |
 | Prescription submit | Prescription, call `prescriptionStatus`, earning → `released` |
-| Withdrawal request | The request, plus the claim stamped on the funding earnings rows |
+| Withdrawal request | The request, plus the claim stamped on the funding earnings rows, and any recovery it settles |
+| Refund (admin, or prescription expiry) | Ledger credit `call:<callId>:refund`, wallet cache, the call's `DoctorEarning` (forfeited, or reversed with any recovery recorded), a pending withdrawal request reduced or cancelled, the `DoctorLedgerAdjustment` rows, `prescriptionStatus` on the expiry path, and the `OutboxEvent` rows for notifications. The admin recovery write-off uses the same pattern |
 
-All five: `writeConcern: { w: 'majority' }`, `readConcern: 'snapshot'`, wrapped in a retry on
+All six: `writeConcern: { w: 'majority' }`, `readConcern: 'snapshot'`, wrapped in a retry on
 `TransientTransactionError`.
+
+Retry safety: the driver re-runs the whole callback on a `TransientTransactionError` (for
+example a write conflict between two wallet appends). A callback therefore reads everything it
+decides on inside the session, and touches only the database. Email, SMS, push and any other
+external call happen after commit, driven by the outbox, never inside the session.
 
 The allowance insert belongs in the call-end session so an aborted transaction releases it.
 
@@ -141,6 +154,41 @@ Treat these as fixed. Do not re-litigate them in code.
 | 19 | FAQ is static content, no backend management |
 | 20 | Platform commission 20%, overridable per doctor |
 | 21 | Prescription window 2 hours, reminder at 1 hour, recordings retained 3 years |
+| 22 | Wallet top-up is a **custom amount in whole rupees** chosen by the patient. No predefined packs. Minimum ₹100, maximum ₹50,000 per transaction (`PlatformSetting.minTopupPaise` / `maxTopupPaise`, enforced on the server). Everything is integer paise internally. Credited only from the verified Razorpay webhook; idempotent |
+| 23 | **Refunds are full only.** Every refund returns the whole charge recorded in the ledger for the call. No partial refunds, enforced in the backend (no amount is accepted) |
+| 24 | Refund is a transaction (approved), and so is the recovery write-off. Admin refunds and the Phase 7 expiry refund share one code path (`refundCallInSession`) and the ledger key `call:<callId>:refund`, so a call is refunded at most once by either |
+| 25 | A refund never touches the doctor's commission: the patient gets the gross back, only the doctor's **net** earning is reversed or recovered, and the platform absorbs its own commission. `held` -> `forfeited`. `released` -> `reversed`. Claimed by a **pending** withdrawal request -> `reversed` and the request is reduced (`cancelled`, a system status distinct from an admin `rejected`, at zero). Already paid out -> `reversed` plus a recovery the doctor owes. A refund is never blocked by a withdrawal. The earning row is never deleted |
+| 26 | Every doctor-side change is an append-only `DoctorLedgerAdjustment` (`earning_reversal`, `recovery_recorded`, `recovery_settled`, `recovery_write_off`) pointing at the earning and the refund ledger entry. `DoctorEarning.recoveryPaise / recoveredPaise / writtenOffPaise` are running totals of those entries. A recovery is taken from later withdrawals (withdrawable = released unclaimed net minus outstanding). An admin may write off the remainder only after `PlatformSetting.recoveryPeriodDays` (provisional default 180 days, pending business approval; `null` disables write-offs) |
+| 27 | Both the patient and the doctor are notified after a refund, through the `OutboxEvent` outbox written in the refund session and delivered by the worker after commit, with retries and duplicate prevention. External calls never run inside a transaction |
+| 28 | The legacy signup flow (`POST /users/create`, `/users/create-user-verify-otp`, `/otp/resend-otp`) is retired through `LEGACY_SIGNUP_MODE`: `enabled` (default, until the Flutter and dashboard teams confirm) or `gone` (`410 Gone` for one release), then the code is deleted. Every call is logged as `legacy_signup_endpoint_used`. `/auth/register` is the only signup |
+| 29 | **Urgent calls are priced from `PlatformSetting` only** (`urgentCallDayRatePaise` / `urgentCallNightRatePaise`, chosen by the same IST day/night window). No hardcoded or fallback rate. A missing, zero, negative, fractional or invalid rate rejects the urgent call with a business error (422), so the affordable duration is never infinite. The rate is copied onto the Call at start and a later settings change never affects a call in progress. Integer paise throughout |
+
+---
+
+## Still open after the Phase 5 decisions
+
+Each needs an answer before the work that depends on it. Do not pick a value.
+
+| Open | Blocks |
+|---|---|
+| Business approval of the provisional **180-day** `recoveryPeriodDays` | Write-off (works at 180 until changed) |
+| Which release flips `LEGACY_SIGNUP_MODE` to `gone`, and confirmation from the Flutter and dashboard teams | Legacy signup 410 |
+| Push (FCM) and email for refund notices; today only the in-app notification is delivered | Notification channels (needs the FCM / email services) |
+
+---
+
+## Phase 6 assumptions awaiting client confirmation
+
+Implemented with the safest reading; the client should confirm or correct each (details in `PROGRESS.md`).
+
+| Assumption | Where |
+|---|---|
+| Commission is rounded to the nearest paise, net = gross - commission | `resolveBilling` |
+| Time past the affordable duration is not billed (platform absorbs it) | `callService.finalize` |
+| A call whose two parties never met in the channel fails with no money and no allowance consumed | `callService.finalize` |
+| A rejoin within 3 s of a leave continues the call | `FINALIZE_DELAY_MS` |
+| `providerEventId` = `channel:uid:eventType:clientSeq` | Agora webhook |
+| Added endpoints beyond the plan: accept, reject, end (hint), history | `call.route.ts` |
 
 ---
 
@@ -154,7 +202,7 @@ leave it at its placeholder and surface the blocker.
 | When does the night window end? | `PlatformSetting.dayStartTime`, currently `06:00`. The Figma showed `08:00` |
 | Research consent purpose and wording | `ResearchConsent.purpose` and `wording` are required, so the feature is blocked until the text arrives. Correct behaviour |
 | PAN and TDS: deduction per call or per payout? | `DoctorEarning.deductionPaise` and `deductionType`, both nullable and unused. Only the timing half is urgent, because per-call would need a backfill |
-| Urgent call rate policy: platform rate or the doctor's, and does commission apply? | `PlatformSetting.urgentCall*RatePaise`, currently `0`, so urgent calls are free |
+| Urgent call rate policy. **Decided (decision 29):** the platform rate from `PlatformSetting.urgentCall*RatePaise`, validated, no fallback, snapshotted at call start; invalid or zero rejects the call. **Still open:** the rate VALUES (both are `0`, so urgent calls are rejected for now), and whether commission applies to urgent calls | `PlatformSetting.urgentCall*RatePaise` |
 | Are review comments public, is the reviewer named, who can take a review down? | `Rating.isPublic`, `patientDisplay`, `hidden*` fields exist. Current schema defaults applied, policy unconfirmed |
 | What is billed when the Agora end event never arrives? | `CALL_END_REASON.NO_END_EVENT`. The sweep closes the call because a call left `active` holds the partial unique index and blocks that doctor from every future call. It writes no ledger entry, no earning, and consumes no free-call allowance, then raises a critical `ReconciliationFinding` for an admin. **That is a deferral to a human, not a decision that the call is free.** Do not promote it to a billing rule without explicit client confirmation |
 
@@ -168,7 +216,7 @@ leave it at its placeholder and surface the blocker.
 - Errors: one `AppError` class, one global error handler, one response envelope.
 - Soft delete: the shared `softDeletePlugin`, never per-model hooks. Financial, audit and
   allowance collections have **no** soft delete: `Call`, `WalletLedger`, `DoctorEarning`,
-  `PaymentOrder`, `RecordingAccessLog`, `ShortCallAllowance`.
+  `PaymentOrder`, `RecordingAccessLog`, `ShortCallAllowance`, `DoctorLedgerAdjustment` (also append-only), `OutboxEvent`.
 - Timezone: all rate-window logic evaluates in `Asia/Kolkata` on the server. Store UTC.
   Every window comparison goes through `src/shared/time.ts`, which wraps `date-fns-tz`.
   No raw `Date` arithmetic on hours anywhere — that is how an off-by-an-hour billing bug

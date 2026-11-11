@@ -371,6 +371,44 @@ rather than reversing, a debit that would go negative being rejected, and a retr
 wallet order with the same Idempotency-Key returning the first response.
 ```
 
+### Revision 3 — client decisions after the Phase 5 review (supersede the text above)
+
+Source of truth: `CLAUDE.md` decisions 22 to 28. **Implemented** (see `PROGRESS.md`) unless marked.
+
+- **Top-up is a custom amount.** `POST /wallet/orders` takes `{ amountRupees }` (a whole number of
+  rupees; fractions, strings and paise are rejected), converts to paise at the edge, and checks
+  `PlatformSetting.minTopupPaise` / `maxTopupPaise` (₹100 to ₹50,000, whole rupees). `packId`,
+  `WALLET_TOPUP_PACKS` and `topupPacks` are gone; `GET /wallet` returns `topupLimits`. The credit is
+  unchanged: webhook only, amount from the stored order, must equal Razorpay's captured amount.
+- **Refund is one shared, full-only transaction** (`refundCallInSession`) used by
+  `POST /admin/refunds` and the Phase 7 expiry job (`refundService.refundCallForExpiry`), keyed
+  `call:<callId>:refund`. In one session: patient credited the full recorded charge; the
+  `DoctorEarning` is forfeited (held), reversed (released), reversed with the pending withdrawal
+  request reduced, or set to the system status `cancelled` when it reaches zero, or reversed with a recovery (already paid); append-only
+  `DoctorLedgerAdjustment` rows; `OutboxEvent` notices for the patient and the doctor. Only the
+  doctor's NET is reversed or recovered; the platform absorbs its commission. A refund is never
+  blocked by a withdrawal.
+- **Phase 7 must:** (1) write the charge as `call:<callId>:charge` and the earning in the call-end
+  session; (2) submit a prescription with a `{ status: 'held' }` filter on the earning and reject a
+  refunded call; (3) call `refundService.refundCallForExpiry` from the expiry job and treat
+  `alreadyRefunded` as success; (4) in the withdrawal-request session use
+  `recoveryService.getWithdrawable` (withdrawable = released unclaimed net minus outstanding
+  recovery, minimum applies to that figure), claim `amount + recovery applied` of earnings, and call
+  `recoveryService.applyToWithdrawal`; (5) on a rejected request, clear the claim only from earnings
+  that are still `released`; a `cancelled` request needs no clearing. A pending request can pay LESS
+  than the earnings it claims (payout + recovery settled); the refund clamps for that.
+- **Order creation is rate limited** (10 per user and 30 per IP per hour, 10 unpaid orders per user per 24 h).
+- **Urgent calls (decision 29):** priced from `PlatformSetting.urgentCall*RatePaise` only, no fallback; a missing / zero / invalid rate rejects the call (422) so affordable duration is never infinite; the rate is snapshotted at call start. Helper already built: `call/callRate.ts`. Phase 6A `start()` must call it for `isUrgent` calls.
+- Phase 6 checklist: `docs/PHASE6_CHECKLIST.md`.
+- **Recovery write-off:** `POST /admin/recoveries/:earningId/write-off`, admin only, only after
+  `PlatformSetting.recoveryPeriodDays` (provisional default 180 days, pending business approval;
+  `null` disables write-offs). `GET /admin/recoveries`
+  lists open debts.
+- **Legacy signup retirement:** `LEGACY_SIGNUP_MODE=enabled` (default) or `gone` (410 + `Deprecation`,
+  `Sunset`, `Link` headers) on `POST /users/create`, `/users/create-user-verify-otp` and
+  `/otp/resend-otp`; every call is logged as `legacy_signup_endpoint_used`. Flip to `gone` for one
+  release after the app teams confirm, then delete the endpoints (not yet done).
+
 ---
 
 ## Phase 6 — Calls and billing

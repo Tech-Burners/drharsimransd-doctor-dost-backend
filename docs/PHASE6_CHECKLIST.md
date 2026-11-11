@@ -1,7 +1,7 @@
 # Phase 6 implementation checklist (calls, Agora, presence, billing)
 
 Prepared before Phase 6 starts. Source: `BUILD_PLAN.md` Phase 6 (6A, 6B) and Revision 3,
-`CLAUDE.md` (Billing, Transactions, Jobs, decisions 1 to 28). **STATUS: IMPLEMENTED (6A + 6B), awaiting review. See `PROGRESS.md` "Phase 6" for what was built, the deviations and the assumptions.**
+`CLAUDE.md` (Billing, Transactions, Jobs, decisions 1 to 28). **STATUS: IMPLEMENTED (6A + 6B) and committed (`208c674`). See `PROGRESS.md` "Phase 6" for what was built, the deviations and the assumptions.**
 
 Run as two sessions, as the plan says. Billing (6B) is written in one pass: no "round up first,
 short-call rule later".

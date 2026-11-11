@@ -61,3 +61,11 @@ asserts neither persisted. If it cannot pass, nothing in Phase 5 onwards can be 
 ## Type checking
 
 `ts-jest` reports type errors as warnings. `npm run build` (`tsc`) is the type gate.
+
+## Real Redis tests (optional)
+
+`src/shared/rateLimit.redis.int.test.ts`, `src/app/modules/outbox/outbox.worker.int.test.ts` and `src/app/modules/call/call.redis.int.test.ts` run against a real Redis only when `TEST_REDIS_URL` is set; otherwise those tests skip. Point it ONLY at a throwaway instance: the database is flushed before each test.
+
+    docker run -d --rm --name dd-test-redis -p 6390:6379 redis:7
+    TEST_REDIS_URL=redis://localhost:6390 npm test
+    docker stop dd-test-redis
