@@ -13,13 +13,14 @@ import { logger } from './shared/logger';
 import { captureException, flushSentry, initSentry } from './shared/sentry';
 import { randomUUID } from 'crypto';
 import { runWithContext } from './shared/requestContext';
+import { startOutboxWorker } from './app/modules/outbox/outbox.worker';
 
 initSentry('worker');
 
 const workers: Worker[] = [];
 
 // Later phases register their queue workers here via createWorker() from shared/queue.
-const startWorkers = (): Worker[] => [];
+const startWorkers = async (): Promise<Worker[]> => [await startOutboxWorker()];
 
 const shutdown = async (signal: string, code = 0) => {
   logger.info({ signal }, 'worker shutting down');
@@ -41,7 +42,7 @@ const main = async () => {
       setTimeout(() => reject(new Error('Redis unreachable (no PONG within 10s)')), 10000),
     ),
   ]);
-  workers.push(...startWorkers());
+  workers.push(...(await startWorkers()));
   logger.info({ workers: workers.length }, 'worker started');
 };
 

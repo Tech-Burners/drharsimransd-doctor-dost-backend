@@ -4,7 +4,13 @@ import {
   TPlatformSetting,
   PlatformSettingModel,
 } from './platformSetting.interface';
-import { ROUNDING_MODE } from './platformSetting.constants';
+import {
+  PAISE_PER_RUPEE,
+  ROUNDING_MODE,
+  TOPUP_DEFAULT_MAX_PAISE,
+  RECOVERY_PERIOD_DEFAULT_DAYS,
+  TOPUP_DEFAULT_MIN_PAISE,
+} from './platformSetting.constants';
 
 const platformSettingSchema = new Schema<TPlatformSetting>(
   {
@@ -102,6 +108,42 @@ const platformSettingSchema = new Schema<TPlatformSetting>(
         message: 'Minimum withdrawal amount must be a safe integer',
       },
     },
+
+    // Wallet top-up limits, per transaction, in paise. Whole rupees only: both must be a
+    // multiple of 100. Enforced by the server on every order, whatever the app validates.
+    minTopupPaise: {
+      type: Number,
+      required: true,
+      default: TOPUP_DEFAULT_MIN_PAISE,
+      min: PAISE_PER_RUPEE,
+      validate: {
+        validator: (v: number) => Number.isSafeInteger(v) && v % PAISE_PER_RUPEE === 0,
+        message: 'Minimum top-up must be a whole number of rupees, in paise',
+      },
+    },
+    maxTopupPaise: {
+      type: Number,
+      required: true,
+      default: TOPUP_DEFAULT_MAX_PAISE,
+      min: PAISE_PER_RUPEE,
+      validate: {
+        validator: (v: number) => Number.isSafeInteger(v) && v % PAISE_PER_RUPEE === 0,
+        message: 'Maximum top-up must be a whole number of rupees, in paise',
+      },
+    },
+
+    // Days after a reversal before an admin may write off what is still outstanding.
+    // PROVISIONAL 180, pending business approval (RECOVERY_PERIOD_DEFAULT_DAYS). Set to null to
+    // refuse write-offs.
+    recoveryPeriodDays: {
+      type: Number,
+      default: RECOVERY_PERIOD_DEFAULT_DAYS,
+      min: 1,
+      validate: {
+        validator: (v: number | null) => v === null || Number.isInteger(v),
+        message: 'Recovery period must be a whole number of days',
+      },
+    },
   },
   {
     timestamps: true,
@@ -110,6 +152,14 @@ const platformSettingSchema = new Schema<TPlatformSetting>(
     },
   },
 );
+
+// The smallest top-up cannot exceed the largest.
+platformSettingSchema.pre('validate', function (next) {
+  if (this.minTopupPaise > this.maxTopupPaise) {
+    this.invalidate('minTopupPaise', 'minTopupPaise must not exceed maxTopupPaise');
+  }
+  next();
+});
 
 // The day and night windows must start at different times.
 platformSettingSchema.pre('validate', function (next) {

@@ -61,6 +61,9 @@ export default {
   redis_url: process.env.REDIS_URL,
   redis_password: process.env.REDIS_PASSWORD,
 
+  // Legacy signup transition: "enabled" (default) or "gone" (answer 410). See middleware/legacySignup.ts
+  legacy_signup_mode: (process.env.LEGACY_SIGNUP_MODE === "gone" ? "gone" : "enabled") as string,
+
   // Authentication / Security
   bcrypt_salt_rounds: Number(process.env.BCRYPT_SALT_ROUNDS || 12),
   jwt_access_secret: process.env.JWT_ACCESS_SECRET,
@@ -80,6 +83,7 @@ export default {
 
   // Razorpay
   razorpay,
+
 
   // Agora
   agora,

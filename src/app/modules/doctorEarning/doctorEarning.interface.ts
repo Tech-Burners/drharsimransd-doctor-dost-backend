@@ -4,7 +4,8 @@ export type TDoctorEarningStatus =
   | 'held'
   | 'released'
   | 'forfeited'
-  | 'withdrawn';
+  | 'withdrawn'
+  | 'reversed';
 
 export interface TDoctorEarning {
   callId: Types.ObjectId;
@@ -19,6 +20,14 @@ export interface TDoctorEarning {
   releasedAt: Date | null;
   forfeitedAt: Date | null;
   withdrawalRequestId: Types.ObjectId | null;
+  // Set when a refund reversed this earning (status 'reversed').
+  reversedAt: Date | null;
+  // Amount the doctor already received and must give back (netPaise, only when the earning
+  // had been paid out). recoveredPaise is taken back from later withdrawals; writtenOffPaise is
+  // forgiven by an admin. Outstanding = recoveryPaise - recoveredPaise - writtenOffPaise.
+  recoveryPaise: number;
+  recoveredPaise: number;
+  writtenOffPaise: number;
   createdAt?: Date;
   updatedAt?: Date;
 }

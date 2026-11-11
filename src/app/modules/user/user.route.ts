@@ -8,6 +8,7 @@ import { userController } from './user.controller';
 import { userValidation } from './user.validation';
 import { USER_ROLE } from './user.constants';
 import { limiter } from '../../utils/limiter';
+import { legacySignup } from '../../middleware/legacySignup';
 const upload = fileUpload('./public/uploads/profile');
 
 export const userRoutes = Router();
@@ -15,6 +16,7 @@ export const userRoutes = Router();
 userRoutes
   .post(
     '/create',
+    legacySignup, // retired flow: see middleware/legacySignup.ts
     limiter.createUserLimiter,
     validateRequest(userValidation?.userValidationSchema),
     userController.createUser,
@@ -23,6 +25,7 @@ userRoutes
 
   .post(
     '/create-user-verify-otp',
+    legacySignup,
     validateRequest(verifyOtpValidations.verifyOtpZodSchema),
     userController.userCreateVarification,
   )

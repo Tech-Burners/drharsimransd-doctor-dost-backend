@@ -21,6 +21,11 @@ export interface TPlatformSetting {
 
   minWithdrawalPaise: number;
 
+  minTopupPaise: number;
+  maxTopupPaise: number;
+  // provisional default 180; null disables write-offs
+  recoveryPeriodDays: number | null;
+
   createdAt?: Date;
   updatedAt?: Date;
 }

@@ -6,7 +6,8 @@ export type TWithdrawalDestinationType = 'bank' | 'upi';
 export type TWithdrawalRequestStatus =
   | 'pending'
   | 'paid'
-  | 'rejected';
+  | 'rejected'
+  | 'cancelled';
 
 export interface TWithdrawalRequest {
   doctorId: Types.ObjectId;

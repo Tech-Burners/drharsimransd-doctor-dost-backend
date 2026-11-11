@@ -5,6 +5,9 @@ import { otpRoutes } from "../modules/otp/otp.routes";
 import { settingsRoutes } from "../modules/setting/setting.route";
 import { ContactRoutes } from "../modules/contactUs/contactUs.route";
 import { healthRoutes } from "../modules/health/health.route";
+import { walletRoutes } from "../modules/wallet/wallet.route";
+import { refundRoutes } from "../modules/refund/refund.route";
+import { recoveryRoutes } from "../modules/doctorEarning/recovery.route";
 
 const router = Router();
 
@@ -33,6 +36,18 @@ const moduleRoutes = [
   {
     path: "/contactUs",
     route: ContactRoutes
+  },
+  {
+    path: "/wallet",
+    route: walletRoutes
+  },
+  {
+    path: "/admin/refunds",
+    route: refundRoutes
+  },
+  {
+    path: "/admin/recoveries",
+    route: recoveryRoutes
   }
 
 ];
