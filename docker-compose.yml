@@ -1,0 +1,57 @@
+# Local development services: MongoDB as a ONE NODE REPLICA SET, and Redis.
+# Transactions do not work against a standalone mongod, so a plain `mongod` is not enough.
+#
+#   docker compose up -d
+#   DATABASE_URL=mongodb://localhost:27017/doctordost?replicaSet=rs0&directConnection=true
+#   REDIS_URL=redis://localhost:6379
+#
+# The replica set member is advertised as localhost:27017, so the API and worker run on
+# the host (npm run dev / npm run worker), not inside this compose network.
+services:
+  mongo:
+    image: mongo:7
+    command: ['--replSet', 'rs0', '--bind_ip_all']
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # One-shot init container: initiates the replica set, then exits. Safe to re-run.
+  mongo-init:
+    image: mongo:7
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: 'no'
+    entrypoint:
+      - mongosh
+      - --host
+      - mongo:27017
+      - --quiet
+      - --eval
+      - |
+        try {
+          rs.status();
+          print('replica set already initiated');
+        } catch (e) {
+          rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] });
+          print('replica set initiated');
+        }
+
+  redis:
+    image: redis:7
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  mongo-data:

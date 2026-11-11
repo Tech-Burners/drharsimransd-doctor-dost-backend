@@ -2,100 +2,94 @@
 /* eslint-disable no-unused-vars */
 /* eslint-disable @typescript-eslint/no-unused-vars */
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
-import express, { Application, Request, Response, NextFunction } from 'express';
-import rateLimit from 'express-rate-limit';
+import express, { Application, Request, Response } from 'express';
+import helmet from 'helmet';
+import pinoHttp from 'pino-http';
 
 import router from './app/routes';
 import notFound from './app/middleware/notfound';
 import globalErrorHandler from './app/middleware/globalErrorhandler';
+import { requestId } from './app/middleware/requestId';
 import serverHomePage from './app/helpers/serverHomePage';
-import { logErrorHandler, logHttpRequests } from './app/utils/logger';
-import path from 'path';
-import fs from 'fs';
 import { limiter } from './app/utils/limiter';
-// import { paymentController } from './app/modules/payment/payment.controller';
+import { docsRoutes } from './app/routes/docs.route';
+import { rawBodyParser, webhookRouter } from './app/routes/webhook.route';
+import config from './app/config';
+import { logger } from './shared/logger';
 
 const app: Application = express();
 
-// app.use('/api/v1/payment/webhook', express.raw({ type: 'application/json' }), paymentController.stripeWebhook);
+// Behind a load balancer in deployment; makes req.ip the client address.
+app.set('trust proxy', 1);
 
+/* ---------- Request id and security headers ---------- */
+// Request id first, so every later log line carries it.
+app.use(requestId);
 
-/* ---------- Core middlewares ---------- */
-app.use(express.static('public'));
+// CSP is off: this is a JSON API, and the server home page ships an inline script.
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(compression());
 
-app.use(express.urlencoded({ extended: true }));
-
-app.use(express.json());
-app.use(cookieParser());
-
-
-
-// app.use(
-//   cors({
-//     origin: true,
-//     credentials: true,
-//     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS']
-//   }),
-// );
-
-
-const allowedOrigins = [
-  "https://staffsecure.ai",
-  "https://dashboard.staffsecure.ai",
-];
-
-// Environment check
-const isProduction = process.env.NODE_ENV === "production";
+const isProduction = config.NODE_ENV === 'production';
 
 app.use(
   cors({
-    origin: function (origin, callback) {
-      if (!origin) return callback(null, true); // Postman, mobile app ইত্যাদির জন্য
-      if (isProduction) {
-        // প্রোডাকশন মোডে শুধু allowedOrigins থেকে অনুমোদন
-        if (allowedOrigins.includes(origin)) {
-          callback(null, true);
-        } else {
-          callback(new Error("Not allowed by CORS"));
-        }
-      } else {
-        // ডেভেলপমেন্টে সব ডোমেইন থেকে access
-        callback(null, true);
-      }
+    origin(origin, callback) {
+      // Mobile apps and tools such as Postman send no Origin header.
+      if (!origin) return callback(null, true);
+      if (!isProduction) return callback(null, true);
+      return config.cors_origins.includes(origin)
+        ? callback(null, true)
+        : callback(new Error('Not allowed by CORS'));
     },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  })
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  }),
 );
 
+app.use(
+  pinoHttp({
+    logger,
+    genReqId: (req) => (req as Request).id as string,
+    customProps: (req) => ({ requestId: (req as Request).id }),
+    customLogLevel: (_req, res, err) =>
+      err || res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info',
+    autoLogging: { ignore: (req) => req.url?.startsWith('/api/v1/health') ?? false },
+  }),
+);
 
-app.use(logHttpRequests);
+/* ---------- Webhooks: BEFORE the body parsers ---------- */
+// Signature verification runs on the exact bytes received, so these routes get the raw
+// Buffer and must be mounted ahead of express.json().
+app.use('/api/v1/webhooks', rawBodyParser, webhookRouter);
 
+/* ---------- Core middlewares ---------- */
+app.use(express.static('public'));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+// Body parsing resumes on stream events and can drop the async context; restore it.
+app.use(requestId);
+app.use(cookieParser());
 
-
-app.use(limiter.rootlimiter); // 👈 root limiter
-
+app.use(limiter.rootlimiter);
 
 /* ---------- Routes ---------- */
 app.use('/api/v1', router);
+app.use('/docs', docsRoutes);
 
 /* Dashboard (HTML) */
-app.get('/',   async (_req: Request, res: Response) => {
+app.get('/', async (_req: Request, res: Response) => {
   const htmlContent = await serverHomePage();
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(htmlContent);
 });
 
-
 /* ---------- Error handling ---------- */
-// Error handler middleware
-app.use(logErrorHandler);
-
-// Global error handler
+// 404 for unmatched routes, then the one global error handler.
+app.use(notFound);
 app.use(globalErrorHandler);
-
-app.use(notFound);           // 404 -> next(err) -> globalErrorHandler
 
 export default app;

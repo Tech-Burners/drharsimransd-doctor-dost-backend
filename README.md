@@ -1,104 +1,100 @@
-# StaffSecure — HR Management Backend
+# DoctorDost — Backend
 
-A role-based HR / recruitment platform API connecting **Employers** and **Candidates**, with admin oversight, job postings, applications, real-time chat, notifications, and Stripe-powered subscriptions.
+Telemedicine voice-calling platform for Tripura, India. Patients pay per minute from a prepaid
+wallet to call verified doctors. This repository is the **backend only**. It serves three clients:
 
-**Live API:** [https://api.staffsecure.ai/](https://api.staffsecure.ai/)
-**Live Socket.IO server:** [https://socket.staffsecure.ai](https://socket.staffsecure.ai)
+- Patient app (Flutter)
+- Doctor app (Flutter)
+- Admin dashboard (web)
+
+> **Read first:** [CLAUDE.md](CLAUDE.md) (hard rules, billing, transactions, open questions),
+> [BUILD_PLAN.md](BUILD_PLAN.md) (phases) and [PROGRESS.md](PROGRESS.md) (current state and
+> what is verified).
 
 ## Table of Contents
 
-1. [Overview](#overview)
+1. [Status](#status)
 2. [Tech Stack](#tech-stack)
-3. [Project Architecture](#project-architecture)
+3. [Architecture](#architecture)
 4. [Directory Structure](#directory-structure)
 5. [Getting Started](#getting-started)
 6. [Environment Variables](#environment-variables)
-7. [Available Scripts](#available-scripts)
-8. [Internationalization (i18n)](#internationalization-i18n)
-9. [Theming & UI](#theming--ui)
-10. [API & Data Fetching](#api--data-fetching)
-11. [Deployment](#deployment)
+7. [Scripts](#scripts)
+8. [API Conventions](#api-conventions)
+9. [Testing](#testing)
+10. [Jobs and the Worker](#jobs-and-the-worker)
+11. [Core Rules](#core-rules)
+12. [Open Questions](#open-questions)
+13. [Security Notes](#security-notes)
 
 ---
 
-## Overview
+## Status
 
-StaffSecure is a **REST + WebSocket API** built with Express and TypeScript on top of MongoDB. It serves three user roles:
+| Phase | State |
+|---|---|
+| 2 — Schema fixes | Done (committed) |
+| 3 — Foundation | Done, awaiting commit approval |
+| 4 — Auth | Not started |
+| 5 — Wallet and payments | Not started |
 
-- **Admin** — approves/manages users, views platform-wide overview stats, manages CMS-style settings (privacy policy, terms, cookies), receives payment reports.
-- **Employer** — posts jobs, reviews applications, subscribes to a paid plan (Stripe) to unlock hiring features.
-- **Candidate** — builds a profile (CV, documents, image), applies to jobs, chats with employers.
-
-Core capabilities:
-
-- JWT-based authentication with OTP-verified signup and password reset
-- Role-based access control (`admin`, `employer`, `candidate`)
-- Job posting & application lifecycle management
-- Real-time chat and messaging via Socket.IO
-- In-app + email notifications
-- Stripe Checkout subscriptions with a nightly cron job to expire/renew subscriptions
-- File uploads (profile images, CVs, documents) parsed via Multer, with CV parsing support (`pdf-parse`, `mammoth`) and OpenAI integration for CV analysis
-- Centralized structured logging (Winston, daily-rotated files) and request rate limiting
+Phase 3 provides the app shell, response envelope, logging, Redis/BullMQ factories, worker
+entrypoint, health endpoint, seed script, replica-set docker-compose, test harness and the
+OpenAPI registry. Business endpoints (calls, wallet, prescriptions, withdrawals) are **not
+built yet**; the models for them exist. See [PROGRESS.md](PROGRESS.md) for exactly what has and
+has not been verified.
 
 ---
 
 ## Tech Stack
 
-| Layer            | Technology                                                                 |
-|-------------------|-----------------------------------------------------------------------------|
-| Runtime           | Node.js + TypeScript                                                       |
-| Web framework     | Express 4                                                                   |
-| Database          | MongoDB via Mongoose 8                                                     |
-| Real-time         | Socket.IO 4 (dedicated port, JWT-authenticated handshake)                  |
-| Auth              | JSON Web Tokens (`jsonwebtoken`), `bcrypt` password hashing                |
-| Validation        | Zod schemas per module                                                     |
-| Payments          | Stripe (Checkout Sessions, subscriptions, webhooks)                        |
-| Email             | Nodemailer                                                                  |
-| File uploads      | Multer (disk storage under `public/uploads`)                               |
-| Document parsing  | `pdf-parse`, `mammoth` (CV/resume parsing)                                  |
-| AI                | OpenAI SDK (CV/job-related AI features)                                    |
-| Scheduling        | `node-cron` (subscription expiry/renewal jobs)                             |
-| Logging           | Winston + `winston-daily-rotate-file`                                      |
-| Rate limiting     | `express-rate-limit`                                                       |
-| Tooling           | ESLint, Prettier, `ts-node-dev` (dev), `tsc` (build)                       |
+| Layer | Technology |
+|---|---|
+| Runtime | Node.js + TypeScript, Express |
+| Database | MongoDB (replica set required) via Mongoose |
+| Jobs | Redis + BullMQ, run in a separate worker process |
+| Real-time | Socket.IO (signalling) |
+| Voice | Agora (call duration comes from the server-side webhook) |
+| Payments | Razorpay (wallet top-ups, webhook-only credit) |
+| Push | FCM via `firebase-admin` |
+| Storage | S3-compatible object storage (private, signed URLs) |
+| SMS | Provider for doctor phone verification (not yet chosen) |
+| Validation | zod at the route boundary |
+| API docs | `@asteasolutions/zod-to-openapi` registry, served at `/docs` |
+| Logging | pino with redaction and request/call correlation ids |
+| Monitoring | Sentry (disabled when `SENTRY_DSN` is blank) |
+| Time | `date-fns-tz`, all rate windows evaluated in `Asia/Kolkata` |
+| Tests | Jest + ts-jest, `mongodb-memory-server` replica set |
 
 ---
 
-## Project Architecture
+## Architecture
 
-The backend follows a **modular, layered architecture** (routes → controller → service → model), inspired by the common Express/TypeScript "module pattern":
+Modules are vertical slices under `src/app/modules/<name>/`:
+
+```
+model · interface · constants · validation · service · controller · route
+```
 
 ```
 Request
-  → routes        (defines endpoint, applies auth/validation middleware)
-    → controller   (parses req, calls service, sends response via sendResponse)
-      → service     (business logic, DB queries via Mongoose + QueryBuilder)
-        → model       (Mongoose schema/model)
+  → route        (authenticate → requireRole → validateRequest → requireIdempotency)
+    → controller   (thin: validate, delegate, send response)
+      → service      (business logic, owns transactions, ownership checks)
+        → model        (Mongoose schema, strict mode)
 ```
 
-Each feature lives in its own module under `src/app/modules/<name>/` and typically contains:
+- Route handlers hold **no business logic**. A service method takes an actor and a target, so
+  the ownership check cannot be omitted by signature.
+- Errors go through one `AppError` class and one global error handler.
+- Soft delete uses the shared `softDeletePlugin` and only on `User`, `Doctor` and
+  `DoctorVerification`. Financial, audit and allowance collections have **no** soft delete.
+- Webhook routes are mounted **before** `express.json()` behind `express.raw()`, so signature
+  verification runs on the exact bytes received.
 
-- `*.route.ts` — Express router, wires middleware (`auth`, `validateRequest`, `fileUpload`) to controller methods
-- `*.controller.ts` — thin HTTP layer, wrapped in `catchAsync` to forward errors to the global handler
-- `*.service.ts` — business logic and database access
-- `*.model.ts` — Mongoose schema
-- `*.interface.ts` — TypeScript types
-- `*.validation.ts` — Zod request-validation schemas
-- `*.constants.ts` — enums/constants (e.g. roles, statuses)
-
-Cross-cutting concerns live outside the modules:
-
-- **`middleware/`** — auth guard, file upload, request validation, error handling, 404 handling
-- **`error/`** — typed error classes/handlers (Zod, Mongoose validation, cast, duplicate-key, Multer) normalized into one response shape by `globalErrorhandler.ts`
-- **`builder/QueryBuilder.ts`** — chainable helper for search, filter, sort, paginate, field-selection on any Mongoose query
-- **`utils/`** — logger, mailer, token management, rate limiters, response helper, OpenAI client, notification helper
-- **`DB/`** — bootstraps a default admin account on startup
-
-**Entry points:**
-
-- `src/server.ts` — connects to MongoDB, starts the HTTP server, starts the Socket.IO server, starts cron jobs, seeds the default admin
-- `src/app.ts` — builds the Express app: static files, CORS, JSON/cookie parsing, HTTP request logging, rate limiting, mounts `/api/v1` routes, error handlers
-- `src/socketIo.ts` — Socket.IO server: JWT-authenticated handshake, presence tracking (`connectedUsers`), real-time chat events, and an `emitNotification` helper used across modules to push notifications + optional email
+Middleware order in `src/app.ts`: request id → helmet → compression → CORS → pino-http →
+webhooks (raw body) → static / body parsers → request id (again) → cookies → rate limit →
+`/api/v1` → `/docs` → home page → 404 → global error handler.
 
 ---
 
@@ -106,44 +102,32 @@ Cross-cutting concerns live outside the modules:
 
 ```
 ├── src/
-│   ├── app.ts                  # Express app configuration
-│   ├── server.ts                # App bootstrap (DB, HTTP server, cron, socket)
-│   ├── socketIo.ts              # Socket.IO server & real-time chat/notifications
-│   └── app/
-│       ├── DB/                  # Default admin seeding
-│       ├── builder/             # QueryBuilder (search/filter/sort/paginate)
-│       ├── config/              # Centralized env var access (config/index.ts)
-│       ├── error/                # Typed error handlers (Zod, Cast, Duplicate, Multer, Validation)
-│       ├── helpers/              # serverHomePage (root "/" dashboard HTML)
-│       ├── interface/            # Shared TS types (common, query, error, globals)
-│       ├── middleware/           # auth, fileUpload, parseData, validateRequest, error/404 handlers
-│       ├── modules/              # Feature modules (see below)
-│       ├── routes/index.ts       # Mounts every module router under /api/v1
-│       └── utils/                # logger, mailer, limiter, token, OpenAI, notify helpers
-├── public/uploads/               # Uploaded files, served statically (profile, work, chat, etc.)
-├── logs/                         # Winston daily-rotated log files
-├── dist/                         # Compiled JS output (tsc build target)
-├── .env.example                  # Sample environment configuration
-└── tsconfig.json
+│   ├── app.ts                  # Express app
+│   ├── server.ts               # API bootstrap (Mongo, HTTP, Socket.IO, Sentry)
+│   ├── worker.ts               # Worker process entrypoint (separate from the API)
+│   ├── seed.ts                 # Idempotent PlatformSetting + admin seed
+│   ├── app/
+│   │   ├── config/             # Env access
+│   │   ├── middleware/         # auth, requestId, requireIdempotency, validateRequest, errors
+│   │   ├── modules/            # Feature slices (see below)
+│   │   ├── routes/             # /api/v1 router, webhook router, /docs
+│   │   └── utils/              # sendResponse, mailer, token, limiter, logger
+│   ├── shared/                 # time, logger, requestContext, sentry, db, redis, queue, openapi
+│   └── test/                   # Test setup and DB helper
+├── docs/                       # TESTING.md, erd, figma, requirements
+├── docker-compose.yml          # One-node Mongo replica set + Redis
+├── env.example                 # Environment template
+├── PROGRESS.md                 # Phase state and verification log
+└── jest.config.js
 ```
 
-**Feature modules** (`src/app/modules/`):
+**Modules** (`src/app/modules/`): `user`, `auth`, `otp`, `refreshToken`, `doctor`,
+`doctorVerification`, `call`, `wallet`, `payment`, `doctorEarning`, `prescription`, `rating`,
+`withdrawalRequest`, `notification`, `notificationSetting`, `deviceToken`, `platformSetting`,
+`settingChangeLog`, `researchConsent`, `recordingAccessLog`, `shortCallAllowance`,
+`idempotencyKey`, `agoraCallEvent`, `reconciliationFinding`, `contactUs`, `setting`, `health`.
 
-| Module              | Responsibility                                                         |
-|---------------------|--------------------------------------------------------------------------|
-| `auth`               | Login, refresh token, forgot/reset password (OTP by email or phone)     |
-| `user`               | Registration + OTP verification, profile & candidate-profile management, admin user management |
-| `candidateProfile`   | Candidate profile schema/interface used by the `user` module            |
-| `otp`                | OTP resend flow                                                          |
-| `job`                | Job CRUD, listing, status updates, applicant counts                     |
-| `application`        | Candidate job applications and their lifecycle                          |
-| `chat` / `message`   | Conversation + message persistence backing the Socket.IO real-time layer |
-| `notifications`      | In-app notification CRUD, read/unread tracking                          |
-| `payment`            | Stripe checkout sessions, subscription cancel/auto-renew, payments received (admin) |
-| `mySubscription`     | Employer's current subscription record                                  |
-| `overview`           | Admin dashboard statistics                                               |
-| `setting`            | CMS-style pages: privacy policy, terms & conditions, cookies policy, dynamic docs |
-| `contactUs`          | Public contact form submission                                          |
+Many of these are schema-only until their phase is built.
 
 ---
 
@@ -151,202 +135,209 @@ Cross-cutting concerns live outside the modules:
 
 ### Prerequisites
 
-- Node.js (LTS recommended)
-- A MongoDB instance (local or Atlas)
-- A Stripe account (test mode keys are fine for local dev)
-- An SMTP-capable email account for Nodemailer (e.g. Gmail app password)
+- Node.js (LTS)
+- Docker (for the local replica set and Redis)
 
-### Installation
+### Install and configure
 
 ```bash
-git clone <repository-url>
-cd Stuff_Secure_HR_Management_Backend
 npm install
+cp env.example .env     # then fill in real values. Never commit .env
 ```
 
-### Configure environment
+### Start local services
 
-Copy the example file and fill in real values (see [Environment Variables](#environment-variables)):
+MongoDB **must** be a replica set. Money writes run in transactions, and a standalone `mongod`
+cannot run them. If a transaction throws because of the topology, fix the topology; never
+remove the session.
 
 ```bash
-cp .env.example .env
+docker compose up -d
 ```
 
-### Run in development
+Then in `.env`:
 
-```bash
-npm run dev
+```
+DATABASE_URL=mongodb://localhost:27017/doctordost?replicaSet=rs0&directConnection=true
+REDIS_URL=redis://localhost:6379
 ```
 
-This starts the API (via `ts-node-dev`, auto-restarting on file changes) on `http://<IP>:<PORT>` and the Socket.IO server on `SOCKET_PORT`. On boot it will:
-
-1. Connect to MongoDB
-2. Start the subscription cron job
-3. Seed a default admin account (from `ADMIN_EMAIL` / `ADMIN_PASSWORD` / `ADMIN_PHONE`) if one doesn't exist
-4. Initialize Socket.IO
-
-### Build & run for production
+### Run
 
 ```bash
-npm run build      # compiles TypeScript -> dist/
-npm run start:prod # node ./dist/server.js
+npm run seed      # creates PlatformSetting and the default admin (safe to re-run)
+npm run dev       # API
+npm run worker    # worker, in a second terminal
+```
+
+Health check: `GET /api/v1/health` returns 200 when Mongo and Redis are up and 503 when
+degraded.
+
+### Production
+
+```bash
+npm run build
+npm run start:prod      # API
+npm run start:worker    # worker, as its own process
 ```
 
 ---
 
 ## Environment Variables
 
-Defined in `.env` (see `src/app/config/index.ts` for how each is consumed). Reference: `.env.example`.
+The full, commented list is in [env.example](env.example). Groups:
 
-| Variable | Purpose |
+| Group | Variables |
 |---|---|
-| `NODE_ENV` | `development` \| `production` — also gates CORS origin allow-listing |
-| `PORT` | HTTP API port |
-| `SOCKET_PORT` | Socket.IO server port |
-| `IP` | Host/IP used in startup log messages |
-| `PROJECT_NAME` | Display name |
-| `BACKEND_URL` / `SERVER_URL` / `CLIENT_URL` / `FRONTEND_URL` | Base URLs used for links (emails, redirects, uploaded-file URLs) |
-| `DATABASE_URL` | MongoDB connection string |
-| `JWT_ACCESS_SECRET` / `JWT_ACCESS_EXPIRES_IN` | Access token secret & TTL |
-| `JWT_REFRESH_SECRET` / `JWT_REFRESH_EXPIRES_IN` | Refresh token secret & TTL |
-| `BCRYPT_SALT_ROUNDS` | Password hashing cost factor |
-| `ADMIN_EMAIL` / `ADMIN_PASSWORD` / `ADMIN_PHONE` | Seed credentials for the default admin account |
-| `NODEMAILER_HOST_EMAIL` / `NODEMAILER_HOST_PASS` | SMTP sender credentials (OTP emails, notifications) |
-| `OTP_TOKEN_EXPIRE_TIME` / `OTP_EXPIRE_TIME` | OTP token/code expiry windows |
-| `STRIPE_API_KEY` / `STRIPE_API_SECRET` / `STRIPE_WEBHOOK_SECRET` | Stripe integration (checkout, webhook signature verification) |
-| `OPENAI_API_KEY` | OpenAI SDK access (CV/job AI features) |
-| `AWS_*` / `S3_BUCKET_*` | Reserved for S3-based file storage (config scaffolding present; current uploads are local disk) |
-| `MONITOR_USERNAME` / `MONITOR_PASSWORD` | Credentials for the server monitoring/dashboard page |
-| `LOGO_URL` | Branding asset URL used in outgoing emails/dashboard |
+| Server | `NODE_ENV`, `PORT`, `IP`, `SOCKET_PORT`, `PROJECT_NAME`, `API_PUBLIC_URL`, `CORS_ORIGINS` |
+| Database | `DATABASE_URL`, `MONGO_MAX_POOL_SIZE` |
+| Redis | `REDIS_URL`, `REDIS_PASSWORD` |
+| Auth | `BCRYPT_SALT_ROUNDS`, `JWT_ACCESS_*`, `JWT_REFRESH_*` |
+| OTP | `OTP_EXPIRE_TIME`, `OTP_TOKEN_EXPIRE_TIME`, `OTP_MAX_ATTEMPTS` |
+| Default admin | `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_PHONE` |
+| Razorpay | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` |
+| Agora | `AGORA_APP_ID`, `AGORA_APP_CERTIFICATE`, `AGORA_WEBHOOK_SECRET`, `AGORA_TOKEN_GRACE_SECONDS`, `AGORA_CUSTOMER_*` |
+| Push | `FIREBASE_PROJECT_ID`, `FIREBASE_SERVICE_ACCOUNT_BASE64` |
+| SMS | `SMS_PROVIDER`, `SMS_API_KEY`, `SMS_SENDER_ID`, `SMS_TEMPLATE_ID` |
+| Storage | `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_SIGNED_URL_TTL_SECONDS` |
+| Email | `NODEMAILER_HOST_EMAIL`, `NODEMAILER_HOST_PASS`, `CONTACT_EMAIL`, `LOGO_URL`, `ALERT_EMAIL` |
+| Monitoring | `SENTRY_DSN`, `LOG_LEVEL`, `LOG_PRETTY` |
+| Tuning | `PRESENCE_TTL_SECONDS`, `PRESENCE_SWEEP_SECONDS`, `CALL_COOLDOWN_SECONDS`, `CALL_ORPHAN_GRACE_SECONDS` |
+| Home page monitor | `MONITOR_USERNAME`, `MONITOR_PASSWORD` |
 
-> ⚠️ The committed `.env` contains live-looking credentials (Mongo Atlas URI, Gmail app password, admin password). Treat these as compromised — rotate them and ensure `.env` is excluded from version control going forward.
+Secrets live in env only. Never commit a Razorpay key, the Agora certificate, a JWT secret or
+SMS credentials. `.env` and `.env.*` are git-ignored; `env.example` is tracked.
 
 ---
 
-## Available Scripts
+## Scripts
 
-| Script | Command | Description |
-|---|---|---|
-| `npm run dev` | `ts-node-dev --respawn --transpile-only src/server.ts` | Start the API in watch mode |
-| `npm run build` | `tsc` | Compile TypeScript to `dist/` |
-| `npm run start:prod` | `node ./dist/server.js` | Run the compiled production build |
-| `npm run lint` | `eslint .` | Lint the codebase |
-| `npm run lint:fix` | `eslint . --fix` | Lint and auto-fix |
-| `npm run prettier` | `prettier --write "./src/**/*.+(js|ts|json)"` | Format source files |
-| `npm run prettier:fix` | `prettier --write .` | Format entire project |
-
-> Note: `npm test` is currently a placeholder (`echo "Error: no test specified"`) — no automated test suite exists yet.
-
----
-
-## Internationalization (i18n)
-
-This is a backend-only API service, not a rendered UI, so there is no i18n/translation framework wired in. Text (validation messages, error messages, emails) is currently hard-coded in English.
-
-The only locale-sensitive concern is **time zones**: subscription cron jobs and timestamped chat messages use `moment-timezone`, with the cron scheduler fixed to `Europe/London` (`payment.cron.ts`) and message timestamps controlled by the `APP_TIMEZONE` config value (falls back to UTC).
-
-If a client-facing frontend needs localized copy, that would live in the frontend application, not here.
-
-## Theming & UI
-
-There's no design system in this repository — it's an API. The only server-rendered UI is:
-
-- **`GET /`** — a lightweight HTML status/dashboard page (`src/app/helpers/serverHomePage.ts`), useful for a quick "is the server up" check and basic monitoring, gated by the `MONITOR_USERNAME` / `MONITOR_PASSWORD` env vars.
-- **`public/`** — static file host for uploaded assets (profile images, CVs/documents, chat images, etc.), organized by feature under `public/uploads/<category>/`.
-
-Any actual product UI (candidate/employer/admin dashboards) is expected to be a separate frontend consuming this API.
-
----
-
-## API & Data Fetching
-
-### Base URL & routing
-
-All module routes are mounted under a single versioned prefix:
-
-```
-{BACKEND_URL}/api/v1/<module>
-```
-
-e.g. `https://api.staffsecure.ai/api/v1/auth/login`, `.../job/all`, `.../users/my-profile`.
-
-| Path prefix | Module |
+| Script | Description |
 |---|---|
-| `/auth` | login, refresh token, forgot/reset password |
-| `/users` | registration, profile, admin user management |
-| `/otp` | OTP resend |
-| `/job` | job postings |
-| `/application` | job applications |
-| `/chat`, `/message` | conversations & messages |
-| `/notifications`, `/notification` | in-app notifications |
-| `/payment` | Stripe checkout & subscription payments |
-| `/subscription` | current employer subscription |
-| `/overview` | admin dashboard stats |
-| `/settings` | privacy policy / terms / cookies / dynamic docs |
-| `/contactUs` | public contact form |
+| `npm run dev` | API in watch mode |
+| `npm run worker` | Worker in watch mode |
+| `npm run build` | Compile with `tsc` to `dist/` |
+| `npm run start:prod` | Run the compiled API |
+| `npm run start:worker` | Run the compiled worker |
+| `npm run seed` | Seed platform settings and the default admin |
+| `npm test` | All tests |
+| `npm run test:unit` | Unit tests only (skips `*.int.test.ts`) |
+| `npm run test:integration` | Integration tests only |
+| `npm run lint` / `lint:fix` | ESLint |
+| `npm run prettier` / `prettier:fix` | Prettier |
 
-### Authentication
+`npm run build` currently reports two pre-existing type errors, in `modules/otp/otp.utils.ts`
+and `utils/openAi.ts`. They are documented in [PROGRESS.md](PROGRESS.md).
 
-- Stateless JWT auth. Send the access token as `Authorization: Bearer <token>` (or a raw `token` header).
-- The `auth(...roles)` middleware (`src/app/middleware/auth.ts`) verifies the token, loads the user, and enforces role membership (`admin`, `employer`, `candidate`) per-route.
-- Access/refresh tokens are issued on login (`POST /api/v1/auth/login`) and renewed via `POST /api/v1/auth/refresh-token`.
-- Signup requires OTP verification (`POST /api/v1/users/create` → `POST /api/v1/users/create-user-verify-otp`); password reset uses a separate OTP flow (`forgot-password-otpByEmail` / `...ByNumber` → `forgot-password-otp-match` → `forgot-password-reset`).
+---
 
-### Request/response conventions
+## API Conventions
 
-- JSON body for standard requests; `multipart/form-data` for endpoints that accept files (profile image, CV, documents) via `fileUpload` (Multer, 50MB limit, image/video/PDF/doc types only) combined with a `parseData()` middleware that JSON-parses non-file fields sent alongside `FormData`.
-- Request bodies are validated with **Zod** schemas (`validateRequest` middleware) before reaching the controller; validation failures are normalized by the global error handler.
-- All responses share one envelope shape, built by `sendResponse()`:
+- Routes live under `/api/v1`. The OpenAPI spec is served at `/docs` (admin-only in
+  production). Every route registers its zod schemas with the registry as it is written.
+- **Response envelope**, success and error alike:
 
 ```jsonc
+// success
+{ "success": true, "message": "…", "data": { }, "meta": null }
+
+// error
 {
-  "success": true,
-  "statusCode": 200,
-  "message": "Job fetched successfully",
-  "meta": { "page": 1, "limit": 10, "total": 42, "totalPage": 5 }, // present on list endpoints
-  "data": { /* ... */ }
+  "success": false,
+  "message": "…",
+  "data": null,
+  "meta": { "requestId": "…", "errorSources": [{ "path": "", "message": "…" }] }
 }
 ```
 
-- Errors share a matching shape (`success: false`, `message`, `errorSources[]`, plus a stack trace only in development), produced centrally in `globalErrorhandler.ts` regardless of whether the failure originated from Zod, Mongoose (cast/validation/duplicate key), Multer, or a manually thrown `AppError`.
-
-### Listing, search, filter, pagination
-
-List endpoints share a common query-string contract implemented by `QueryBuilder` (`src/app/builder/QueryBuilder.ts`):
-
-| Query param | Effect |
-|---|---|
-| `search` / `searchTerm` | Case-insensitive regex match across a module's configured searchable fields |
-| `<fieldName>=value` | Case-insensitive regex filter on that specific field |
-| `sort` | Comma-separated field list, e.g. `sort=-createdAt,name` (defaults to `-createdAt`) |
-| `page`, `limit` | Pagination (defaults: page `1`, limit `10`) |
-| `fields` | Comma-separated projection, e.g. `fields=name,email` |
-
-### Real-time (Socket.IO)
-
-- Connect to the dedicated Socket.IO server — locally on `SOCKET_PORT`, in production at [https://socket.staffsecure.ai](https://socket.staffsecure.ai) — authenticating via `auth.token` (or `token`/`authorization` header) in the handshake, verified against the same JWT access secret as the REST API.
-- Key events: `send-message` (persists + broadcasts a chat message, falls back to a push notification if the recipient is offline), `my-chat-list`, `onlineUser` presence broadcast, `notification` (unread-count push), `disconnect`.
-- `emitNotification()` (`src/socketIo.ts`) is the shared helper other modules call to push a real-time notification, persist it, and optionally send a companion email.
-
-### Payments (Stripe)
-
-- `POST /api/v1/payment/create-checkout-session` (employer) creates a Stripe Checkout Session for a subscription plan.
-- Stripe webhooks are received raw (pre-JSON-parsing) at `POST /api/v1/payment/webhook`, mounted directly in `app.ts` before `express.json()` so the signature can be verified against the raw body.
-- A nightly cron job (`payment.cron.ts`, 02:00 Europe/London) expires lapsed subscriptions and processes year-end cancellations.
-
-### File uploads
-
-- Uploaded files are stored on local disk under `public/uploads/<category>/` and served statically at `{BACKEND_URL}/uploads/<category>/<filename>`.
-- `AWS_*` / `S3_BUCKET_*` config keys exist as scaffolding for a future move to S3-backed storage but aren't currently wired into the upload middleware.
+  `meta` carries pagination on list endpoints. `stack` appears in `meta` only in development.
+  Send `X-Request-Id` to set your own correlation id; it is echoed back.
+- **Auth:** all three roles sign in with email and password. Every protected route runs
+  authenticate → `requireRole` → an ownership check inside the service. The authenticated
+  subject comes from the token, never from the body, query or path.
+- **Idempotency:** money-creating POSTs require an `Idempotency-Key` header:
+  `/wallet/orders`, `/calls`, `/doctor/withdrawals`, `/calls/:id/prescription`. The same key
+  with the same body replays the stored response; the same key with a different body is a 409.
+- **Money** is always integer paise. Format at the edge only.
+- **Time:** stored as UTC. Rate-window logic goes through `src/shared/time.ts` in
+  `Asia/Kolkata`.
 
 ---
 
-## Deployment
+## Testing
 
-- **Live API:** [https://api.staffsecure.ai/](https://api.staffsecure.ai/)
-- **Live Socket.IO server:** [https://socket.staffsecure.ai](https://socket.staffsecure.ai)
-- Build with `npm run build`, run with `npm run start:prod`; ensure `NODE_ENV=production` so CORS restricts to the allow-listed origins (`https://staffsecure.ai`, `https://dashboard.staffsecure.ai`) hard-coded in `src/app.ts`.
-- The process needs persistent write access to `logs/` (Winston daily-rotate) and `public/uploads/` (local file storage), so deploy to an environment with a persistent filesystem/volume rather than an ephemeral one — otherwise uploaded files and rotated logs will be lost on redeploy/restart.
-- Both the HTTP API (`PORT`) and the Socket.IO server (`SOCKET_PORT`) need to be reachable; if fronted by a reverse proxy/load balancer, both ports (or a WS-upgrade-aware route to the socket port) must be exposed.
-- Configure the Stripe webhook endpoint (`/api/v1/payment/webhook`) in the Stripe dashboard to point at the deployed URL, and set `STRIPE_WEBHOOK_SECRET` accordingly.
-- Rotate all secrets before going live — the sample `.env` in this repo contains real-looking credentials that should not be reused in production.
+```bash
+npm test
+```
+
+Integration tests start an in-memory MongoDB **replica set**, so transactions are exercised for
+real. No Docker is needed for the tests. See [docs/TESTING.md](docs/TESTING.md).
+
+---
+
+## Jobs and the Worker
+
+Workers run in a **separate process**, never in the API; scheduled work registered in the API
+would run once per instance. Phase 3 ships the worker shell only. Later phases register:
+
+| Job | Trigger |
+|---|---|
+| Prescription reminder | Delayed 1h after call end, job id = call id |
+| Prescription expiry + refund | Delayed 2h after call end, job id = call id |
+| Overdue-prescription sweep | Every 15 min |
+| Overdue-call sweep | Every 30 s |
+| Presence sweep | Every 60 s |
+| Nightly reconciliation | Paid orders without ledger entry, ledger vs calls, cache vs ledger |
+| Dead token cleanup | Daily |
+
+Delayed jobs use the call id as the BullMQ job id, so enqueuing twice is a no-op, and every
+handler re-reads state and exits if it has already moved.
+
+---
+
+## Core Rules
+
+Summary of [CLAUDE.md](CLAUDE.md); that file is authoritative.
+
+1. No client is trusted for money, duration or state. Everything is recomputed server-side.
+2. `WalletLedger` is authoritative. `Wallet.balancePaise` is a display cache, written in the
+   same transaction and never read to make a decision.
+3. Call duration comes from the Agora server-side webhook, not the client.
+4. All money is integer paise.
+5. Route handlers hold no business logic. Services own transactions.
+6. Three-layer authorization on every protected route.
+7. Open questions are never answered with an invented default.
+
+**Billing** is one function, `resolveBilling()`, used by every caller. It rounds up to the next
+minute; under 60 s is 0 minutes, and exactly 60 s is chargeable. One free short call is
+allowed per patient and doctor pair per rolling 24 hours, decided at call end. Platform
+commission is 20%, overridable per doctor.
+
+**Transactions** run in exactly five operations: call start, call end, top-up credit,
+prescription submit and withdrawal request.
+
+---
+
+## Open Questions
+
+Parked, not blocking. Each has a placeholder; do not default them.
+
+- When does the night window end? (`PlatformSetting.dayStartTime`, currently `06:00`; the Figma
+  showed `08:00`)
+- Research consent purpose and wording (the feature is blocked until the text arrives)
+- PAN and TDS: deduction per call or per payout?
+- Urgent call rate policy (`urgentCall*RatePaise` is `0`, so urgent calls are currently free)
+- Review comment visibility, reviewer naming and takedown rights
+- What is billed when the Agora end event never arrives? The sweep closes the call without a
+  ledger entry or earning and raises a critical `ReconciliationFinding` for an admin.
+
+---
+
+## Security Notes
+
+- A remote-code `eval()` block was found and removed from `src/server.ts` in Phase 3. Its
+  origin is unknown. Treat the repository as possibly tampered with and rotate any secret that
+  was on a machine that ran it with `AUTH_API_KEY` set. Details in [PROGRESS.md](PROGRESS.md).
+- Logs redact sensitive fields. Never log tokens, OTPs or payment secrets.
+- The server home page monitor credentials are rendered into client-side script. Treat them as
+  low-security and consider disabling the page in production.

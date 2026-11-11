@@ -2,15 +2,17 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 
 import { NextFunction, Request, Response } from 'express';
+import { toEnvelope } from '../utils/sendResponse';
 
-const httpStatus = { BAD_REQUEST: 400, OK: 200, NOT_FOUND: 404 };
-
-const notFound = (req: Request, res: Response, next: NextFunction):any => {
-  return res.status(httpStatus.NOT_FOUND).json({
-    success: false,
-    message: 'API Not Found !!',
-    error: '',
-  });
+const notFound = (req: Request, res: Response, next: NextFunction): any => {
+  return res.status(404).json(
+    toEnvelope({
+      success: false,
+      message: 'API Not Found !!',
+      data: null,
+      meta: { requestId: req.id },
+    }),
+  );
 };
 
 export default notFound;

